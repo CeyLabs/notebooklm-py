@@ -35,12 +35,13 @@
 
 📥 **Downloads & Export** - Download all generated artifacts locally (MP3, MP4, PDF, PNG, CSV, JSON, Markdown). Export to Google Docs/Sheets. **Features the web UI doesn't offer**: batch downloads, quiz/flashcard export in multiple formats, mind map JSON extraction.
 
-## Three Ways to Use
+## Four Ways to Use
 
 | Method | Best For |
 |--------|----------|
 | **Python API** | Application integration, async workflows, custom pipelines |
 | **CLI** | Shell scripts, quick tasks, CI/CD automation |
+| **REST API Server** | HTTP endpoints, web apps, microservices, remote access |
 | **Agent Integration** | Claude Code, Codex, LLM agents, natural language automation |
 
 ## Features
@@ -93,9 +94,36 @@ pip install notebooklm-py
 # With browser login support (required for first-time setup)
 pip install "notebooklm-py[browser]"
 playwright install chromium
+
+# With API server support (for Railway/Docker deployment)
+pip install "notebooklm-py[web]"
 ```
 
 If `playwright install chromium` fails with `TypeError: onExit is not a function`, see the Linux workaround in [Troubleshooting](docs/troubleshooting.md#linux).
+
+### API Server
+
+Deploy a REST API server for NotebookLM automation:
+
+```bash
+# Install with web dependencies
+pip install "notebooklm-py[web]"
+
+# Set up environment variables
+export API_SECRET_KEY="$(openssl rand -hex 32)"
+export NOTEBOOKLM_AUTH_JSON="$(cat ~/.notebooklm/storage_state.json)"
+
+# Run locally
+uvicorn notebooklm.server:app --reload
+
+# Or deploy to Railway (free hosting)
+railway init
+railway variables set API_SECRET_KEY="$(openssl rand -hex 32)"
+railway variables set NOTEBOOKLM_AUTH_JSON="$(cat ~/.notebooklm/storage_state.json)"
+railway up
+```
+
+See [API Server Guide](docs/api-server.md) for complete deployment instructions, Railway setup, Docker configuration, and API documentation.
 
 ### Development Installation
 
@@ -224,6 +252,7 @@ Fetches the canonical [SKILL.md](SKILL.md) directly from GitHub.
 
 - **[CLI Reference](docs/cli-reference.md)** - Complete command documentation
 - **[Python API](docs/python-api.md)** - Full API reference
+- **[API Server](docs/api-server.md)** - REST API deployment guide (Railway, Docker)
 - **[Configuration](docs/configuration.md)** - Storage and settings
 - **[Release Guide](docs/releasing.md)** - Release checklist and packaging verification
 - **[Troubleshooting](docs/troubleshooting.md)** - Common issues and solutions
