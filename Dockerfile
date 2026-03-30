@@ -43,9 +43,8 @@ USER appuser
 # Expose port (Railway auto-detects this)
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
+# Health check removed - Railway uses its own healthcheck system via railway.json
+# For local Docker: check health with: curl http://localhost:8000/health
 
 # Start server
 # Railway sets PORT environment variable
