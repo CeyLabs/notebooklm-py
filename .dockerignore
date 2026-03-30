@@ -25,6 +25,12 @@ tests
 docs
 *.md
 !README.md
+!SKILL.md
+!AGENTS.md
+
+# Deployment guides (not needed in container)
+RAILWAY.md
+test_server.sh
 
 # IDE
 .vscode

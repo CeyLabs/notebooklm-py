@@ -123,7 +123,9 @@ railway variables set NOTEBOOKLM_AUTH_JSON="$(cat ~/.notebooklm/storage_state.js
 railway up
 ```
 
-See [API Server Guide](docs/api-server.md) for complete deployment instructions, Railway setup, Docker configuration, and API documentation.
+**Quick Links**:
+- **[Railway Quick Start](RAILWAY.md)** - 5-minute Railway deployment guide
+- **[API Server Guide](docs/api-server.md)** - Complete documentation, Docker, and API reference
 
 ### Development Installation
 
