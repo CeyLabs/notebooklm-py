@@ -112,6 +112,20 @@ class AddSourceResponse(BaseModel):
     status: str = Field(..., description="Processing status of the source")
 
 
+class DeleteSourceRequest(BaseModel):
+    """Request model for deleting a source by title."""
+
+    notebook_id: str = Field(..., description="ID of the notebook containing the source")
+    title: str = Field(..., description="Exact title of the source to delete")
+
+
+class DeleteSourceResponse(BaseModel):
+    """Response model for source deletion."""
+
+    success: bool = Field(..., description="Whether deletion was successful")
+    source_id: str = Field(..., description="ID of the deleted source")
+
+
 class HealthResponse(BaseModel):
     """Response model for health check."""
 
@@ -522,6 +536,90 @@ async def add_source(request: AddSourceRequest) -> dict[str, Any]:
         )
     except NotebookLMError as e:
         logger.error(f"Error adding source: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@app.delete(
+    "/api/sources/delete",
+    response_model=DeleteSourceResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(verify_api_key)],
+    tags=["Sources"],
+)
+async def delete_source(request: DeleteSourceRequest) -> dict[str, Any]:
+    """Delete a source from a notebook by exact title match.
+
+    Args:
+        request: Source deletion request with notebook_id and title
+
+    Returns:
+        Deletion success status
+
+    Raises:
+        HTTPException: If deletion fails or source not found
+
+    Example:
+        ```bash
+        curl -X DELETE http://localhost:8000/api/sources/delete \\
+          -H "X-API-Key: your-key" \\
+          -H "Content-Type: application/json" \\
+          -d '{"notebook_id": "abc123", "title": "My Source Title"}'
+        ```
+    """
+    try:
+        client = get_client()
+
+        # Find source by exact title
+        sources = await client.sources.list(request.notebook_id)
+        matches = [src for src in sources if src.title == request.title]
+
+        if not matches:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No source found with title: {request.title}",
+            )
+
+        if len(matches) > 1:
+            logger.warning(f"Multiple sources ({len(matches)}) found with title '{request.title}', deleting first match")
+
+        # Delete the first matching source
+        source_to_delete = matches[0]
+        success = await client.sources.delete(
+            notebook_id=request.notebook_id,
+            source_id=source_to_delete.id,
+        )
+
+        if not success:
+            logger.warning(f"Delete returned False for source {source_to_delete.id}")
+
+        return {
+            "success": success,
+            "source_id": source_to_delete.id,
+        }
+
+    except NotebookNotFoundError as e:
+        logger.error(f"Notebook not found: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notebook not found: {request.notebook_id}",
+        )
+    except ValidationError as e:
+        logger.error(f"Validation error deleting source: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except AuthError as e:
+        logger.error(f"Authentication error deleting source: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="NotebookLM authentication failed. Check NOTEBOOKLM_AUTH_JSON.",
+        )
+    except NotebookLMError as e:
+        logger.error(f"Error deleting source: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
