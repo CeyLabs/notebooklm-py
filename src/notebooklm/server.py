@@ -37,7 +37,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, model_validator
 
 from notebooklm import NotebookLMClient
 from notebooklm.auth import AuthTokens
@@ -48,6 +48,7 @@ from notebooklm.exceptions import (
     SourceAddError,
     ValidationError,
 )
+from notebooklm.types import source_status_to_str
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -82,7 +83,25 @@ class AddSourceRequest(BaseModel):
     """Request model for adding a source to a notebook."""
 
     notebook_id: str = Field(..., description="ID of the target notebook")
-    url: HttpUrl = Field(..., description="URL to add as a source")
+    type: str = Field("url", description="Source type: 'url' or 'text'")
+    url: HttpUrl | None = Field(None, description="URL to add as a source (required if type='url')")
+    text: str | None = Field(None, description="Text content (required if type='text')")
+    title: str | None = Field(None, description="Title for text sources (required if type='text')")
+
+    @model_validator(mode="after")
+    def validate_source_type(self) -> "AddSourceRequest":
+        """Validate required fields based on source type."""
+        if self.type == "url":
+            if not self.url:
+                raise ValueError("'url' is required when type is 'url'")
+        elif self.type == "text":
+            if not self.text:
+                raise ValueError("'text' is required when type is 'text'")
+            if not self.title:
+                raise ValueError("'title' is required when type is 'text'")
+        else:
+            raise ValueError(f"Invalid type: {self.type}. Must be 'url' or 'text'")
+        return self
 
 
 class AddSourceResponse(BaseModel):
@@ -98,6 +117,23 @@ class HealthResponse(BaseModel):
 
     status: str = Field(..., description="Server status")
     authenticated: bool = Field(..., description="Whether NotebookLM client is authenticated")
+
+
+class GenerateSlideDeckRequest(BaseModel):
+    """Request model for generating a slide deck."""
+
+    notebook_id: str = Field(..., description="ID of the target notebook")
+    description: str = Field("", description="Custom instructions for slide deck generation")
+    language: str = Field("en", description="Language code (e.g., 'en', 'es', 'fr')")
+    format: str = Field("detailed", description="Slide format: 'detailed' or 'presenter'")
+    length: str = Field("default", description="Slide length: 'default' or 'short'")
+
+
+class GenerateSlideDeckResponse(BaseModel):
+    """Response model for slide deck generation."""
+
+    task_id: str = Field(..., description="Task ID for polling generation status")
+    status: str = Field(..., description="Generation status")
 
 
 class ErrorResponse(BaseModel):
@@ -352,10 +388,10 @@ async def create_notebook(request: CreateNotebookRequest) -> dict[str, Any]:
     tags=["Sources"],
 )
 async def add_source(request: AddSourceRequest) -> dict[str, Any]:
-    """Add a URL source to a notebook.
+    """Add a URL or text source to a notebook.
 
     Args:
-        request: Source addition request with notebook_id and url
+        request: Source addition request with notebook_id, type, and url/text/title
 
     Returns:
         Added source details
@@ -363,25 +399,41 @@ async def add_source(request: AddSourceRequest) -> dict[str, Any]:
     Raises:
         HTTPException: If addition fails
 
-    Example:
+    Examples:
         ```bash
+        # Add URL source
         curl -X POST http://localhost:8000/api/sources/add \\
           -H "X-API-Key: your-key" \\
           -H "Content-Type: application/json" \\
-          -d '{"notebook_id": "abc123", "url": "https://example.com"}'
+          -d '{"notebook_id": "abc123", "type": "url", "url": "https://example.com"}'
+
+        # Add text source
+        curl -X POST http://localhost:8000/api/sources/add \\
+          -H "X-API-Key: your-key" \\
+          -H "Content-Type: application/json" \\
+          -d '{"notebook_id": "abc123", "type": "text", "title": "My Notes", "text": "Content here"}'
         ```
     """
     try:
         client = get_client()
-        source = await client.sources.add_url(
-            notebook_id=request.notebook_id,
-            url=str(request.url),
-        )
+
+        # Add source based on type (validation already done by Pydantic model)
+        if request.type == "url":
+            source = await client.sources.add_url(
+                notebook_id=request.notebook_id,
+                url=str(request.url),
+            )
+        else:  # type == "text"
+            source = await client.sources.add_text(
+                notebook_id=request.notebook_id,
+                title=request.title,
+                content=request.text,
+            )
 
         return {
             "source_id": source.id,
             "title": source.title,
-            "status": source.status.value if hasattr(source.status, "value") else str(source.status),
+            "status": source_status_to_str(source.status),
         }
 
     except NotebookNotFoundError as e:
@@ -410,6 +462,101 @@ async def add_source(request: AddSourceRequest) -> dict[str, Any]:
         )
     except NotebookLMError as e:
         logger.error(f"Error adding source: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+# --- Artifact Generation Endpoints ---
+
+
+@app.post(
+    "/api/artifacts/generate-slide-deck",
+    response_model=GenerateSlideDeckResponse,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verify_api_key)],
+    tags=["Artifacts"],
+)
+async def generate_slide_deck(request: GenerateSlideDeckRequest) -> dict[str, Any]:
+    """Generate a slide deck from notebook content.
+
+    Args:
+        request: Slide deck generation request
+
+    Returns:
+        Generation status with task_id
+
+    Raises:
+        HTTPException: If generation fails
+
+    Example:
+        ```bash
+        curl -X POST http://localhost:8000/api/artifacts/generate-slide-deck \\
+          -H "X-API-Key: your-key" \\
+          -H "Content-Type: application/json" \\
+          -d '{"notebook_id": "abc123", "description": "executive summary", "format": "presenter"}'
+        ```
+    """
+    from notebooklm.types import SlideDeckFormat, SlideDeckLength
+
+    try:
+        client = get_client()
+
+        # Map format strings to enums
+        format_map = {
+            "detailed": SlideDeckFormat.DETAILED_DECK,
+            "presenter": SlideDeckFormat.PRESENTER_SLIDES,
+        }
+        length_map = {
+            "default": SlideDeckLength.DEFAULT,
+            "short": SlideDeckLength.SHORT,
+        }
+
+        # Validate format and length
+        if request.format not in format_map:
+            raise ValidationError(f"Invalid format: {request.format}. Must be 'detailed' or 'presenter'")
+        if request.length not in length_map:
+            raise ValidationError(f"Invalid length: {request.length}. Must be 'default' or 'short'")
+
+        # Generate slide deck
+        result = await client.artifacts.generate_slide_deck(
+            notebook_id=request.notebook_id,
+            language=request.language,
+            instructions=request.description or None,
+            slide_format=format_map[request.format],
+            slide_length=length_map[request.length],
+        )
+
+        # Check if generation was successful
+        if not result or not result.task_id:
+            raise NotebookLMError("Slide deck generation failed")
+
+        return {
+            "task_id": result.task_id,
+            "status": "pending" if not result.is_complete else "completed",
+        }
+
+    except NotebookNotFoundError as e:
+        logger.error(f"Notebook not found: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notebook not found: {request.notebook_id}",
+        )
+    except ValidationError as e:
+        logger.error(f"Validation error generating slide deck: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except AuthError as e:
+        logger.error(f"Authentication error generating slide deck: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="NotebookLM authentication failed. Check NOTEBOOKLM_AUTH_JSON.",
+        )
+    except NotebookLMError as e:
+        logger.error(f"Error generating slide deck: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
