@@ -48,6 +48,7 @@ from notebooklm.exceptions import (
     SourceAddError,
     ValidationError,
 )
+from notebooklm.rpc.types import SharePermission
 from notebooklm.types import source_status_to_str
 
 # Configure logging
@@ -165,6 +166,24 @@ class NotebookMetadataResponse(BaseModel):
     created_at: str | None = Field(None, description="Creation timestamp (ISO format)")
     is_owner: bool = Field(..., description="Whether the user is the owner")
     sources: list[dict[str, str | None]] = Field(..., description="List of sources in the notebook")
+
+
+class ShareNotebookRequest(BaseModel):
+    """Request model for sharing a notebook with users."""
+
+    notebook_id: str = Field(..., description="ID of the notebook to share")
+    emails: list[str] = Field(..., description="List of email addresses to share with")
+    permission: str = Field("viewer", description="Permission level: 'editor' or 'viewer'")
+    notify: bool = Field(True, description="Send email notification to users")
+    welcome_message: str = Field("", description="Optional welcome message for users")
+
+
+class ShareNotebookResponse(BaseModel):
+    """Response model for sharing a notebook."""
+
+    notebook_id: str = Field(..., description="ID of the shared notebook")
+    shared_with: list[str] = Field(..., description="List of emails successfully shared with")
+    failed: list[dict[str, str]] = Field(..., description="List of failed shares with error messages")
 
 
 # --- Application Lifespan ---
@@ -445,6 +464,105 @@ async def get_notebook_metadata(notebook_id: str) -> dict[str, Any]:
         )
     except NotebookLMError as e:
         logger.error(f"Error getting metadata: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@app.post(
+    "/api/notebooks/share",
+    response_model=ShareNotebookResponse,
+    status_code=status.HTTP_200_OK,
+    dependencies=[Depends(verify_api_key)],
+    tags=["Notebooks"],
+)
+async def share_notebook(request: ShareNotebookRequest) -> dict[str, Any]:
+    """Share a notebook with multiple users.
+
+    Args:
+        request: Share request with notebook_id, emails, permission, and optional settings
+
+    Returns:
+        Results showing successfully shared emails and any failures
+
+    Raises:
+        HTTPException: If sharing fails
+
+    Example:
+        ```bash
+        curl -X POST http://localhost:8000/api/notebooks/share \\
+          -H "X-API-Key: your-key" \\
+          -H "Content-Type: application/json" \\
+          -d '{
+            "notebook_id": "abc123",
+            "emails": ["user1@example.com", "user2@example.com"],
+            "permission": "editor",
+            "notify": true
+          }'
+        ```
+    """
+    try:
+        client = get_client()
+
+        # Validate permission
+        permission_map = {
+            "editor": SharePermission.EDITOR,
+            "viewer": SharePermission.VIEWER,
+        }
+
+        if request.permission not in permission_map:
+            raise ValidationError(
+                f"Invalid permission: {request.permission}. Must be 'editor' or 'viewer'"
+            )
+
+        permission = permission_map[request.permission]
+        shared_with = []
+        failed = []
+
+        # Share with each email
+        for email in request.emails:
+            try:
+                await client.sharing.add_user(
+                    notebook_id=request.notebook_id,
+                    email=email,
+                    permission=permission,
+                    notify=request.notify,
+                    welcome_message=request.welcome_message,
+                )
+                shared_with.append(email)
+                logger.info(f"Successfully shared notebook {request.notebook_id} with {email}")
+            except Exception as e:
+                error_msg = str(e)
+                failed.append({"email": email, "error": error_msg})
+                logger.error(f"Failed to share with {email}: {error_msg}")
+
+        return {
+            "notebook_id": request.notebook_id,
+            "shared_with": shared_with,
+            "failed": failed,
+        }
+
+    except NotebookNotFoundError as e:
+        logger.error(f"Notebook not found: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notebook not found: {request.notebook_id}",
+        )
+    except ValidationError as e:
+        logger.error(f"Validation error sharing notebook: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(e),
+        )
+    except AuthError as e:
+        logger.error(f"Authentication error sharing notebook: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="NotebookLM authentication failed. Check NOTEBOOKLM_AUTH_JSON.",
+        )
+    except NotebookLMError as e:
+        logger.error(f"Error sharing notebook: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
