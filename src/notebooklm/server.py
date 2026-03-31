@@ -61,18 +61,6 @@ NOTEBOOKLM_AUTH_JSON = os.getenv("NOTEBOOKLM_AUTH_JSON")
 PORT = int(os.getenv("PORT", "8000"))
 HOST = os.getenv("HOST", "0.0.0.0")
 
-if not API_SECRET_KEY:
-    raise RuntimeError(
-        "API_SECRET_KEY environment variable is required. "
-        "Set it to a secure random string (min 32 characters)."
-    )
-
-if not NOTEBOOKLM_AUTH_JSON:
-    raise RuntimeError(
-        "NOTEBOOKLM_AUTH_JSON environment variable is required. "
-        "Set it to the contents of your ~/.notebooklm/storage_state.json file."
-    )
-
 
 # --- Request/Response Models ---
 
@@ -127,10 +115,39 @@ async def lifespan(app: FastAPI):
     """Manage application lifespan - initialize and cleanup NotebookLM client."""
     logger.info("Initializing NotebookLM client...")
 
+    # Validate required environment variables
+    if not API_SECRET_KEY:
+        logger.error("API_SECRET_KEY environment variable is not set")
+        raise RuntimeError(
+            "API_SECRET_KEY environment variable is required. "
+            "Set it to a secure random string (min 32 characters)."
+        )
+
+    if not NOTEBOOKLM_AUTH_JSON:
+        logger.error("NOTEBOOKLM_AUTH_JSON environment variable is not set")
+        raise RuntimeError(
+            "NOTEBOOKLM_AUTH_JSON environment variable is required. "
+            "Set it to the contents of your ~/.notebooklm/storage_state.json file."
+        )
+
     try:
-        # Parse auth JSON
+        # Parse and validate auth JSON
         auth_data = json.loads(NOTEBOOKLM_AUTH_JSON)
-        auth_tokens = AuthTokens.from_storage_dict(auth_data)
+
+        # Create temporary file for auth data
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(auth_data, f)
+            temp_auth_path = Path(f.name)
+
+        try:
+            # Load auth from temporary file
+            auth_tokens = await AuthTokens.from_storage(path=temp_auth_path)
+        finally:
+            # Clean up temporary file
+            temp_auth_path.unlink(missing_ok=True)
 
         # Initialize client
         client = NotebookLMClient(auth=auth_tokens)
