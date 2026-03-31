@@ -143,6 +143,16 @@ class ErrorResponse(BaseModel):
     detail: str | None = Field(None, description="Additional error details")
 
 
+class NotebookMetadataResponse(BaseModel):
+    """Response model for notebook metadata."""
+
+    id: str = Field(..., description="Notebook ID")
+    title: str = Field(..., description="Notebook title")
+    created_at: str | None = Field(None, description="Creation timestamp (ISO format)")
+    is_owner: bool = Field(..., description="Whether the user is the owner")
+    sources: list[dict[str, str | None]] = Field(..., description="List of sources in the notebook")
+
+
 # --- Application Lifespan ---
 
 
@@ -371,6 +381,56 @@ async def create_notebook(request: CreateNotebookRequest) -> dict[str, Any]:
         )
     except NotebookLMError as e:
         logger.error(f"Error creating notebook: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e),
+        )
+
+
+@app.get(
+    "/api/notebooks/{notebook_id}/metadata",
+    response_model=NotebookMetadataResponse,
+    dependencies=[Depends(verify_api_key)],
+    tags=["Notebooks"],
+)
+async def get_notebook_metadata(notebook_id: str) -> dict[str, Any]:
+    """Get notebook metadata with sources list.
+
+    Args:
+        notebook_id: ID of the notebook
+
+    Returns:
+        Notebook metadata including id, title, created_at, is_owner, and sources list
+
+    Raises:
+        HTTPException: If notebook not found or other errors
+
+    Example:
+        ```bash
+        curl http://localhost:8000/api/notebooks/{notebook_id}/metadata \\
+          -H "X-API-Key: your-key"
+        ```
+    """
+    try:
+        client = get_client()
+        metadata = await client.notebooks.get_metadata(notebook_id)
+
+        return metadata.to_dict()
+
+    except NotebookNotFoundError as e:
+        logger.error(f"Notebook not found: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Notebook not found: {notebook_id}",
+        )
+    except AuthError as e:
+        logger.error(f"Authentication error getting metadata: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="NotebookLM authentication failed. Check NOTEBOOKLM_AUTH_JSON.",
+        )
+    except NotebookLMError as e:
+        logger.error(f"Error getting metadata: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e),
